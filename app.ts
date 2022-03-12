@@ -1,8 +1,8 @@
 import express from "express";
 import { json } from "body-parser";
 import { Request,Response } from "express";
-import { Blockchain,Block,isValidBlockStructure,Blocktype } from "./main";
-import {connecttoPeers,broadcast,getSockets,initP2Pserver} from "./p2p"
+import { Blockchain,Block} from "./main";
+import {connecttoPeers,getSockets,initP2Pserver} from "./p2p"
 const app=express()
 app.use(json())
 
@@ -18,7 +18,7 @@ app.get("/blocks",(req:Request,res:Response)=>{
 })
 
 app.post("/mineblock",(req:Request,res:Response)=>{
-    Jaybee_chain.addBlock(new Block(req.body.data))
+    Jaybee_chain.addBlock(new Block(req.body.data,0,""))
     res.status(200).send({
         chain:Jaybee_chain.chain
     }
@@ -30,7 +30,7 @@ app.get('/peers',(req:Request,res:Response)=>{
 })
 
 app.post("/addpeer",(req:Request,res:Response)=>{
-    // connecttoPeer()
+    connecttoPeers(req.body.peer,Jaybee_chain)
     res.send()
 })
 
