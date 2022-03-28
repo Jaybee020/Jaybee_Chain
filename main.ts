@@ -2,7 +2,8 @@ import sha256 from "crypto-js/sha256"
 import  WordArray from "crypto-js/lib-typedarrays"
 import     {broadcastLatest}    from "./p2p"
 import BigNumber from "bignumber.js"
-import { processTransactions, Transactions, UnspentTxOut } from "./transaction"
+import { processTransactions, Transactions, UnspentTxOut,getCoinbaseTransaction } from "./transaction"
+import {createTransaction, getBalance, getPrivatefromWallet, getPublicfromWallet} from './wallet'
 
 interface Blocktype{
     hash:WordArray,
@@ -14,6 +15,7 @@ interface Blocktype{
     minterBalance:number,
     minterAddress:string,
     calculatehash:()=>WordArray,
+    isStakingValid:(chain:Blockchain)=>boolean
 
 }
 
@@ -23,18 +25,23 @@ function getPublicAddress(){
     return "3def"
 }
 
-function getBalance(){
-    return 40
-}
+
 
 const MINT_WITHOUGHT_BALANCE_HEIGHT=5
 //time interval between generation of blocks in seconds
 const BLOCK_GENERATION_INTERVAL: number = 10;
 
+
 //how much difference before diffculty is adjusted in blocks
 const DIFFICULTY_ADJUSTMENT_INTERVAL: number = 10;
 
+function getAccountBalance(){
+    return getBalance(getPublicfromWallet(),UnspentTxOuts)
+}
+
 var UnspentTxOuts:UnspentTxOut[]=[]
+
+
 
 class Block implements Blocktype{
     hash: WordArray
@@ -44,10 +51,11 @@ class Block implements Blocktype{
     difficulty: number
     minterBalance: number
     minterAddress: string
+    body: Transactions[]
     constructor(
-      public body: Transactions[],
       minterBalance:number,
-      minterAddress:string
+      minterAddress:string,
+      body:Transactions[]
     ) {
         this.hash=sha256("Created Genesis block")
         this.previousblockhash=null
@@ -56,6 +64,7 @@ class Block implements Blocktype{
         this.difficulty=0,
         this.minterAddress=minterAddress,
         this.minterBalance=minterBalance
+        this.body=body
     }
 
     calculatehash(){
@@ -63,6 +72,22 @@ class Block implements Blocktype{
         return hash
     }
 
+    // Proof of stake function we would love to implement SHA256(prevhash + address + timestamp) <= 2^256 * balance / diff
+    //The more your balance the chance it is you are most likely to solve the cryptographic puzzle,difficulty is dynamically calculated,higher diffculty is the smaller right hand side becomes
+    isStakingValid(chain:Blockchain){
+
+        this.difficulty=this.difficulty+1
+
+        // Allow minting for blocks below a certain block height
+        if(this.height<=MINT_WITHOUGHT_BALANCE_HEIGHT){
+            this.minterBalance=this.minterBalance+1
+        }
+        const balanceoverdifficulty=new BigNumber(2).exponentiatedBy(256).multipliedBy(getAccountBalance()).dividedBy(chain.getDifficulty())
+        const stakingHash=sha256(this.previousblockhash+getPublicAddress()+this.timestamp.toString())
+        const decimalStakinghash=new BigNumber(stakingHash.toString(),16)
+        const difference=decimalStakinghash.minus(balanceoverdifficulty)
+        return difference.toNumber() <=0
+    }
    
 
 
@@ -78,29 +103,32 @@ class Blockchain{
         
     }
     creategenesisblock():Blocktype{
-        return new Block([],getBalance(),getPublicAddress())
+        return new Block(getAccountBalance(),getPublicfromWallet(),[])
     }
     addBlock(newBlock:Blocktype){
         //setting new block previousblockhash field if it is not the genesis block
         if(this.chain.length>0){
             newBlock.previousblockhash=this.getLatestBlock().hash
-        }
-        //add new block to blockchain
-        newBlock.height=this.chain.length
-        newBlock.timestamp=new Date()
-        newBlock.hash= newBlock.calculatehash()
-        newBlock.difficulty=this.getDifficulty()
-        if(isValidBlockStructure(newBlock)){
-        const foundBlock=this.findBlock(newBlock)//finding valid block that satisfies the PoS algorithm and add it to blockchain
-        if(this.isValidTimestamp(newBlock)){
-            const newUnspentTxOut=processTransactions(newBlock.body,UnspentTxOuts,newBlock.height)
-            if(newUnspentTxOut){
-            UnspentTxOuts=newUnspentTxOut
-            this.chain.push(foundBlock)
+            //add new block to blockchain
+            newBlock.height=this.chain.length
+            newBlock.timestamp=new Date()
+            newBlock.hash= newBlock.calculatehash()
+            newBlock.difficulty=this.getDifficulty()
+            if(isValidBlockStructure(newBlock)){
+            const foundBlock=this.findBlock(newBlock)//finding valid block that satisfies the PoS algorithm and add it to blockchain
+                if(this.isValidTimestamp(newBlock)){
+                    const newUnspentTxOut=processTransactions(newBlock.body,UnspentTxOuts,newBlock.height)
+                    if(newUnspentTxOut){
+                        UnspentTxOuts=newUnspentTxOut
+                        this.chain.push(foundBlock)
+                    }
+                }
             }
-        }
+    }else{
+        this.chain.push(newBlock )
+    }
+        
         broadcastLatest(this)//send chain over websocket
-        }
     }
 
     getBlock(blockheight:number):Blocktype{
@@ -127,6 +155,8 @@ class Blockchain{
                 return false
             }else if(that_block.hash.toString()!==that_block.calculatehash().toString()){
                 return false
+            }else if(that_block.isStakingValid(this)){
+
             }
             return true
         }
@@ -141,8 +171,10 @@ class Blockchain{
         return true
     }
 
+
+    //changed from comapring length to comparing difficulty`
     replacechain(newBlocks:Blockchain):void{
-        if(newBlocks.validatechain()&&newBlocks.chain.length>this.chain.length){
+        if(newBlocks.validatechain()&&newBlocks.getAccumulatedDifficulty()>this.getAccumulatedDifficulty()){
             console.log('Received blockchain is valid. Replacing current blockchain with received blockchain');
             this.chain= newBlocks.chain;
             broadcastLatest(this)
@@ -156,7 +188,7 @@ class Blockchain{
         while(true){
             let timestamp= Date.now()
             if(pastTimestamp!==timestamp){
-                if(this.isStakingValid(block)){
+                if(block.isStakingValid(this)){
                     block.timestamp=new Date(timestamp)//updating the timestamp for the block after finding valid timestamp for it 
                     return block
                 }
@@ -176,6 +208,30 @@ class Blockchain{
     }
 
 
+    generateBlockData(receiverAddress: string, amount: number):Transactions[]{
+        if (!isValidAddress(receiverAddress)) {
+            throw Error('invalid address');
+        }
+        if (typeof amount !== 'number') {
+            throw Error('invalid amount');
+        }
+        const coinbaseTx: Transactions = getCoinbaseTransaction(getPublicfromWallet(), this.getLatestBlock().height + 1);
+        const tx = createTransaction( amount,receiverAddress,getPrivatefromWallet(), UnspentTxOuts);
+        if(tx?.isValidTransactionStructure()){
+            const blockData: Transactions[] = [coinbaseTx, tx];
+            return blockData
+        }else{
+            throw Error("An error occured")
+        }
+        
+    };
+
+    getAccumulatedDifficulty():number{
+        return this.chain.map((block:Block)=>block.difficulty)
+                        .map((diffuculty:number)=>Math.pow(2,diffuculty))
+                        .reduce((a,b)=>a+b)
+    }
+
     getAdjustedDifficulty():number{
         const prevAdjustedBlock:Blocktype=this.chain[this.chain.length-DIFFICULTY_ADJUSTMENT_INTERVAL]
         const timeExpected=BLOCK_GENERATION_INTERVAL*DIFFICULTY_ADJUSTMENT_INTERVAL
@@ -187,26 +243,6 @@ class Blockchain{
         }else{
             return prevAdjustedBlock.difficulty
         }
-    }
-
-
-     // Proof of stake function we would love to implement SHA256(prevhash + address + timestamp) <= 2^256 * balance / diff
-    //The more your balance the chance it is you are most likely to solve the cryptographic puzzle,difficulty is dynamically calculated,higher diffculty is the smaller right hand side becomes
-    isStakingValid(block:Blocktype){
-
-        block.difficulty=block.difficulty+1
-
-        // Allow minting for blocks below a certain block height
-        if(block.height<=MINT_WITHOUGHT_BALANCE_HEIGHT){
-            block.minterBalance=block.minterBalance+1
-        }
-
-        const balanceoverdifficulty=new BigNumber(2).exponentiatedBy(256).multipliedBy(getBalance()).dividedBy(this.getDifficulty())
-        const stakingHash=sha256(block.previousblockhash+getPublicAddress()+block.timestamp.toString())
-        const decimalStakinghash=new BigNumber(stakingHash.toString(),16)
-        const difference=decimalStakinghash.minus(balanceoverdifficulty)
-
-        return difference.toNumber() <=0
     }
 
     //making sure the timestamp in the block is valid 
@@ -225,6 +261,21 @@ const isValidBlockStructure = (block: Blocktype): boolean => {
         && typeof block.timestamp === 'object'
         && typeof block.body === 'string';
 };
+
+// valid address is a valid ecdsa public key in the 04 + X-coordinate + Y-coordinate format
+const isValidAddress = (address: string): boolean => {
+    if (address.length !== 130) {
+        console.log('invalid public key length');
+        return false;
+    } else if (address.match('^[a-fA-F0-9]+$') === null) {
+        console.log('public key must contain only hex characters');
+        return false;
+    } else if (!address.startsWith('04')) {
+        console.log('public key must start with 04');
+        return false;
+    }
+    return true;
+};
   
-export {Block,Blockchain,isValidBlockStructure,Blocktype}
+export {Block,Blockchain,isValidBlockStructure,Blocktype,getAccountBalance}
 

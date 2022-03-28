@@ -1,10 +1,13 @@
 import express from "express";
 import { json } from "body-parser";
 import { Request,Response } from "express";
-import { Blockchain,Block} from "./main";
+import { Blockchain,Block, getAccountBalance} from "./main";
 import {connecttoPeers,getSockets,initP2Pserver} from "./p2p"
+import { getPublicfromWallet, initWallet } from "./wallet";
 const app=express()
 app.use(json())
+
+initWallet()
 
 
 const Jaybee_chain=new Blockchain([])
@@ -18,7 +21,13 @@ app.get("/blocks",(req:Request,res:Response)=>{
 })
 
 app.post("/mineblock",(req:Request,res:Response)=>{
-    Jaybee_chain.addBlock(new Block(req.body.data,0,""))
+    if (req.body.address == null || req.body.amount==null) {
+        res.send('data parameter is missing');
+        return;
+    }
+    const TxBody=Jaybee_chain.generateBlockData(req.body.address,req.body.amount)
+    const newBlock=new Block(getAccountBalance(),getPublicfromWallet(),TxBody)
+    Jaybee_chain.addBlock(newBlock)
     res.status(200).send({
         chain:Jaybee_chain.chain
     }

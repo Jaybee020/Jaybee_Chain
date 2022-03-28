@@ -2,7 +2,7 @@ import { SHA256 } from "crypto-js"
 import * as ecdsa from "elliptic"
 import * as _ from 'lodash'
 
-const ec = new ecdsa.ec('secp256k1');//specifying the elliptic curve to use
+export const ec = new ecdsa.ec('secp256k1');//specifying the elliptic curve to use
 
 
 const COINBASE_AMOUNT: number = 50;//first transaction in the block and is the reward for mining that block
@@ -75,6 +75,16 @@ class TxIn {
 }
 
 
+
+class UnspentTxOut{
+    constructor(public readonly txOutId: string, public readonly txOutIndex: number,public readonly address: string,public readonly amount: number) {
+        this.txOutId = txOutId;
+        this.txOutIndex = txOutIndex;
+        this.address = address;
+        this.amount = amount;
+    }
+}
+
 class Transactions{
         public id: string
         public txIns: TxIn[]
@@ -90,11 +100,11 @@ class Transactions{
 
     generateTransactionId():string{
         const txinContent=this.txIns
-        .map((txin:TxIn)=>txin.txOutId+txin.txOutIndex)
+        .map((txin:TxIn)=>txin.txOutId+txin.txOutIndex.toString())
         .reduce((a,b)=>a+b,"")
 
         const txOutContent: string = this.txOuts
-        .map((txOut: TxOut) => txOut.address + txOut.amount)
+        .map((txOut: TxOut) => txOut.address + txOut.amount.toString())
         .reduce((a, b) => a + b, '');
 
         return SHA256(txinContent+txOutContent).toString()
@@ -104,7 +114,7 @@ class Transactions{
     signTxIn(txIn:TxIn,private_key:string,UnspentTxOuts:UnspentTxOut[]){
         const dataToSign=this.id
        
-        const referencedUTxO=findUnspentTxOut(this.id,txIn.txOutIndex,UnspentTxOuts)
+        const referencedUTxO=findUnspentTxOut(txIn.txOutId,txIn.txOutIndex,UnspentTxOuts)
         if(referencedUTxO){
             const referencedAddress=referencedUTxO.address
             if (getPublicKey(private_key)!==referencedAddress){
@@ -113,7 +123,8 @@ class Transactions{
             }
         const key=ec.keyFromPrivate(private_key)
         const signedData=ec.sign(dataToSign,key)
-        return toHexString(signedData.toDER())
+        txIn.signature=toHexString(signedData.toDER())
+        return txIn.signature==toHexString(signedData.toDER())
         }else{
             console.log("Could not find an unspent UTXO")
         }
@@ -192,14 +203,6 @@ class Transactions{
     }
 }
 
-class UnspentTxOut{
-    constructor(public readonly txOutId: string, public readonly txOutIndex: number,public readonly address: string,public readonly amount: number) {
-        this.txOutId = txOutId;
-        this.txOutIndex = txOutIndex;
-        this.address = address;
-        this.amount = amount;
-    }
-}
 
 
 //find a UTXO in the list of unspent of unspent transactions
@@ -292,7 +295,7 @@ function isValidAddress(address: string): boolean{
     return true;
 };
 
-
+//validate the transaction in each block
 function validateBlockTransactions(transactions:Transactions[],UnspentTxOuts:UnspentTxOut[],blockheight:number):boolean{
     const coinbaseTx=transactions[0]
     if(validateCoinbaseTransaction(coinbaseTx,blockheight)){
@@ -320,4 +323,8 @@ function processTransactions(transactions:Transactions[],UnspentTxOuts:UnspentTx
     }
 
     return updateUnspendTxOut(transactions,UnspentTxOuts)
+}
+
+export {
+    processTransactions, UnspentTxOut, TxIn, TxOut, getCoinbaseTransaction, getPublicKey,Transactions
 }
